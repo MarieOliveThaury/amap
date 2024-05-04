@@ -54,7 +54,7 @@ type_commune <- read_excel("data/données insee/grille_densite_7_niveaux_2023.xl
 
 code_ZE <- read_csv("data/identifiants/zone_d_emploi.csv")
 code_BV <- read_csv("data/identifiants/bassin_de_vie.csv")
-amap <- read_excel("amap.xlsx", skip = 1) %>%
+amap <- read_excel("data/amap.xlsx", skip = 1) %>%
   filter(is.na(doublon)) %>% select(-doublon)
 ``` 
 
