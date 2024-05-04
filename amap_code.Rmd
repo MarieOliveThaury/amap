@@ -1,0 +1,843 @@
+---
+title: "AMAP - Fichier de résultats"
+author: "BORNET Jérémi, THAURY Marie-Olive"
+date: "2024-04-21"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, echo = FALSE, warning = FALSE}
+# install.packages('factoextra')
+# install.packages ("readxl")
+# install.packages("extrafont")
+# install.packages("modelsummary")
+# install.packages("GGally")
+# install.packages("rpart.plot")
+# install.packages("caret")
+# install.packages("randomForest")
+# install.packages("janitor")
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+library(janitor)
+library(readr)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(randomForest)
+library(cluster)
+library(factoextra)
+library(ggplot2)
+library(readxl)
+library(extrafont)
+library(modelsummary)
+require(broom) 
+library(GGally)
+library(knitr)
+```
+
+
+```{r, echo = FALSE, warning = FALSE}
+rm(list = ls())
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+ZE <- read_csv("data/données insee/donnees_zone_emploi.csv")
+BV <- read_csv("data/données insee/donnees_bassin_vie.csv")
+communes <- read_csv("data/données insee/donnees_communales.csv")
+type_commune <- read_excel("data/données insee/grille_densite_7_niveaux_2023.xlsx", 
+                           skip = 4)
+
+code_ZE <- read_csv("data/identifiants/zone_d_emploi.csv")
+code_BV <- read_csv("data/identifiants/bassin_de_vie.csv")
+amap <- read_excel("amap.xlsx", skip = 1) %>%
+  filter(is.na(doublon)) %>% select(-doublon)
+``` 
+
+```{r, echo = FALSE, warning = FALSE}
+amap <- amap %>%
+  mutate(CODGEO = word(CODGEO, 2, sep = '_')) %>%
+  select(id, CODGEO)
+
+#type_commune est la table grille_densité de l'INSEE (à charger)
+type_commune <- type_commune %>%
+  mutate(type = as.character(DENS), 
+         type_agg = ifelse(DENS %in% c(5,.6,7), "campagne", 
+                           ifelse(DENS %in% c(2,3,4),
+                                  "petite_moy_ville", 
+                                  "metropole"))) %>%
+  select(CODGEO, type, type_agg)
+
+code_BV <- code_BV %>% select(CODGEO, BV2022)
+code_ZE <- code_ZE %>% select(CODGEO, ZE2020)
+BV <- BV %>% select(-`Bassin de vie`) %>% 
+  rename("salaire_moy" = "salair_moy")
+ZE <- ZE %>% select(-`Zone d'emploi`)
+communes <- communes %>% select(-Commune)
+
+
+nb_amap <- amap %>%
+  group_by(CODGEO) %>%
+  mutate(NombreAmap = n()) %>%
+  ungroup() %>%
+  distinct(CODGEO, .keep_all  = T)
+
+codes_ttl <- merge(code_BV, code_ZE, by = "CODGEO")
+
+df <- nb_amap %>%
+  full_join(codes_ttl, by = 'CODGEO') %>%
+  full_join(communes, by = c('CODGEO' = 'CODEGEO')) %>%
+  left_join(BV, by = 'BV2022') %>%
+  left_join(ZE, by = 'ZE2020') %>%
+  left_join(type_commune, by = 'CODGEO') %>% 
+  mutate(NombreAmap = coalesce(NombreAmap, 0))
+
+```
+
+
+```{r, echo = FALSE, warning = FALSE}
+# je nettoie les donnees 
+var <- c("salaire_moy", "tx_pauvrete", "tx_chomage", "densite", 
+         "0_enfant", "1_enfant", "2_enfants", "3_enfants_+", 
+         "dipl_0", "dipl_brevet", "dipl_cap_bep", "dipl_bac",
+         "dipl_bac+2",
+         "dipl_bac+3+4", "dipl_bac+5+", 
+         "agri", "artisants_commerçants_chef_d_ent",
+         "cadres_prof_intellec",
+         "prof_int", "employes", "ouvriers",
+         "supermarches", "epiceries", "boulangeries",
+         "15ans-", "25ans-", "25-64ans", "65ans+",
+         "taille_menage", "nv_vie")
+
+df <- df %>% 
+  
+  # je supprime les villes pour lesquelles le pourcentage des CSP n'est 
+  # pas renseigne
+  arrange(ouvriers) %>% 
+  mutate(index = row_number()) %>% 
+  filter(index < 33986) %>%
+  
+  # je supprime les villes pour lesquelles le niveau de vie n'est pas indique
+  arrange(nv_vie) %>% 
+  mutate(index = row_number()) %>%
+  filter(index < 30946) %>% 
+  select(-index) %>%
+  
+  # je supprime les villes pour lesquelles le salaire moyen et le tx de pauvrete
+  # ne sont pas indiques 
+  filter(!CODGEO %in% c('27676', '46063', '82177'))
+#30942 lignes
+
+# je recupere le nombre d'amap et l'indicatrice de presence 
+df <- df %>%
+  mutate(NombreAmap = ifelse(is.na(NombreAmap), 0, NombreAmap), 
+         Presence = ifelse(NombreAmap > 0, 1, 0))
+
+
+# je transforme en variables en variables numeriques 
+for (i in var ){
+  df[[i]] <- as.numeric(df[[i]])
+}
+
+```
+
+```{r, echo = FALSE, warning = FALSE}
+#je normalise certaines variables 
+df <- df %>% 
+  mutate(salaire_moy_n = 
+           (salaire_moy - min(salaire_moy))/ (max(salaire_moy) - min(salaire_moy))*100, 
+         boulangeries_n = epiceries/max(epiceries)*100, 
+         supermarches_n = supermarches/max(supermarches)*100, 
+         boulangeries_n = boulangeries/max(boulangeries)*100, 
+         nv_vie_n = (nv_vie - min(nv_vie))/(max(nv_vie) - min(nv_vie))*100, 
+         densite_n = (densite - min(densite))/(max(densite) - min(densite))*100)
+         
+         
+         
+
+# je crée des variables agrégées 
+df <- df %>%
+  mutate(enfants = `1_enfant` + `2_enfants` + `3_enfants_+`,
+         `CSP_+` = artisants_commerçants_chef_d_ent +
+           cadres_prof_intellec +
+           prof_int,
+         `CSP_-` = ouvriers + agri + employes,
+         dipl_1 = dipl_0 + dipl_brevet,
+         dipl_2 = dipl_cap_bep + dipl_bac,
+         dipl_3 = `dipl_bac+2`, `dipl_bac+3+4`,
+         dipl_4 = `dipl_bac+5+`,
+         master_licence = `dipl_bac+5+` + `dipl_bac+3+4`,
+         etudes_sup = `dipl_bac+5+` + `dipl_bac+3+4` + `dipl_bac+2`, 
+         salaire_moy_n_2 = salaire_moy_n*salaire_moy_n)
+
+```
+
+# Régressions 
+
+## Régression multilinéaire du nombre d'amaps dans la commune sur les variables explicatives
+```{r, echo = FALSE, results = 'hide', warning = FALSE, fig.height=5, fig.width=7}
+## Avec boulangerie 
+colonnes_predictives <- c("salaire_moy_n",
+                          # "salaire_moy_n_2",
+                          "ouvriers",
+                          "cadres_prof_intellec", 
+                          # "dipl_0",
+                          # "dipl_brevet",
+                          # "dipl_cap_bep",
+                          # "dipl_bac+2",
+                          # "dipl_bac+3+4",
+                          # "dipl_bac+5+",
+                          "master_licence", 
+                          "type_agg", 
+                          "boulangeries_n", 
+                          # "enfants", 
+                          "3_enfants_+", 
+                          # "15ans-", 
+                          "25ans-", 
+                          # "25-64ans", 
+                          "65ans+",
+                          "densite_n")
+nom_variables <- c("Salaire moyen normalisé", 
+                   "Part d'ouvriers",
+                   "Part de cadres et professions\nintellectuelles supérieures", 
+                   "Part de personnes diplomées\nd'une licence ou plus", 
+                   "Type d'agglomération :\nmétropole", 
+                   "Type d'agglomération :\nville petite ou moyenne",
+                   'Nombre de boulangeries', 
+                   "Part de ménages avec\nau moins 3 enfants", 
+                   "Part de la population\nâgée de 25 ans ou moins", 
+                   "Part de la population\nâgée de 65 ans ou plus", 
+                   "Densité")
+
+data = df[, c("NombreAmap", colonnes_predictives)]
+modele_regression <- lm(NombreAmap ~ ., data = data)
+
+tab <- tidy(modele_regression) %>% 
+  mutate(estimate = round(estimate, 5), 
+         `std.error` = round(`std.error`, 2), 
+         statistic = round(statistic, 2), 
+         `p.value` = round(`p.value`, 2), 
+         sig = ifelse(`p.value` < 0.01, "***", 
+                      ifelse(`p.value` < 0.05, "**", 
+                             ifelse(`p.value` < 0.1, "*", " ")))) %>%
+  select(-term)
+
+tab$Variable <- c("Constante", nom_variables)
+tab <- tab %>% select(Variable, estimate, `std.error`, statistic, 
+                      `p.value`, sig)
+
+# modelplot(models = modele_regression,
+#           coef_map = cm)
+
+plot <- ggcoef(modele_regression,
+               exclude_intercept = TRUE,
+               errorbar_height = .2,
+               color = "blue",
+               vline_color = "red", sort = "none")
+plot$data$term <- nom_variables
+
+# plot + xlab("Coefficient") + ylab("Variable") +
+#   theme(panel.background = element_rect(fill = 'white',
+#                                         color = 'grey'),
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+```
+
+
+```{r, echo = FALSE, results = 'hide', warning = FALSE, fig.height=5, fig.width=7}
+
+cust <- data.frame(term = c(plot$data$term[1:6], plot$data$term[8:11]),
+                   estimate = c(plot$data$estimate[1:6], plot$data$estimate[8:11]), 
+                   `conf.low` = c(plot$data$`conf.low`[1:6], plot$data$`conf.low`[8:11]),
+                   `conf.high` = c(plot$data$`conf.high`[1:6], plot$data$`conf.high`[8:11]))
+
+ggcoef(cust, color = "blue", errorbar_height = .2,
+       vline_color = "red",  sort = "none") +
+  xlab("Coefficient") + ylab("Variable") + 
+  theme(panel.background = element_rect(fill = 'white', 
+                                        color = 'grey'),
+        panel.grid.major = element_line(color = 'grey',
+                                        linetype = 'dotted'))
+```
+
+```{r, echo = FALSE, results = 'hide', warning = FALSE, fig.height=1.5, fig.width=7}
+
+cust <- data.frame(term = plot$data$term[7],
+                   estimate = plot$data$estimate[7], 
+                   `conf.low` = plot$data$`conf.low`[7],
+                   `conf.high` = plot$data$`conf.high`[7])
+
+ggcoef(cust, color = "blue", errorbar_height = .2,
+       vline_color = "red",  sort = "none") +
+  xlab("Coefficient") + ylab("Variable") + 
+  theme(panel.background = element_rect(fill = 'white', 
+                                        color = 'grey'),
+        panel.grid.major = element_line(color = 'grey',
+                                        linetype = 'dotted'))
+```
+
+
+
+
+```{r, echo = FALSE, warning = FALSE}
+kable(tab)
+knit_print(paste0("R2 ajusté = ", round(summary(modele_regression)$`adj.r.squared`, 2)))
+```
+
+
+```{r, echo = FALSE, results = 'hide', fig.height=5, fig.width=10, warning = FALSE}
+## Sans boulangerie 
+# colonnes_predictives <- c("salaire_moy_n",
+#                           # "salaire_moy_n_2",
+#                           "ouvriers",
+#                           "cadres_prof_intellec", 
+#                           # "dipl_0",
+#                           # "dipl_brevet",
+#                           # "dipl_cap_bep",
+#                           # "dipl_bac+2",
+#                           # "dipl_bac+3+4",
+#                           # "dipl_bac+5+",
+#                           "master_licence", 
+#                           "type_agg", 
+#                           #"boulangeries_n", 
+#                           # "enfants", 
+#                           "3_enfants_+", 
+#                           # "15ans-", 
+#                           "25ans-", 
+#                           # "25-64ans", 
+#                           "65ans+",
+#                           "densite")
+# nom_variables <- c("Salaire moyen normalisé", 
+#                    "Proportion d'ouvriers",
+#                    "Part de cadres et professions \nintellectuelles supérieures", 
+#                    "Part de personnes diplomées \nd'une licence ou plus", 
+#                    "Type d'agglomération : \nmétropole", 
+#                    "Type d'agglomération : \nville petite ou moyenne",
+#                    #'Nombre de boulangeries', 
+#                    "Part de ménages avec \nau moins 3 enfants", 
+#                    "Part de la population \nâgée de 25 ans ou moins", 
+#                    
+#                    "65ans+" = "Part de la population \nâgée de 65 ans ou plus", 
+#                    "Densité"
+# )
+# 
+# data = df[, c("NombreAmap", colonnes_predictives)]
+# modele_regression <- lm(NombreAmap ~ ., data = data)
+# 
+# tab <- tidy(modele_regression) %>% 
+#   mutate(estimate = round(estimate, 5), 
+#          `std.error` = round(`std.error`, 2), 
+#          statistic = round(statistic, 2), 
+#          `p.value` = round(`p.value`, 2), 
+#          sig = ifelse(`p.value` < 0.01, "***", 
+#                       ifelse(`p.value` < 0.05, "**", 
+#                              ifelse(`p.value` < 0.1, "*", " ")))) %>%
+#   select(-term)
+# 
+# tab$Variable <- c("Constante", nom_variables)
+# tab <- tab %>% select(Variable, estimate, `std.error`, statistic, 
+#                       `p.value`, sig)
+# 
+# # modelplot(models = modele_regression,
+# #           coef_map = cm)
+# 
+# plot <- ggcoef(modele_regression, 
+#        exclude_intercept = TRUE,
+#        errorbar_height = .2, 
+#        color = "blue", sort = "ascending", 
+#        vline_color = "red")
+# plot$data$term <- nom_variables
+# 
+# plot + xlab("Coefficient") + ylab("Variable")
+```
+
+```{r, echo = FALSE, warning = FALSE}
+# kable(tab)
+```
+
+
+## Régression logistique de la présence d'une amap dans la commune sur les variables explicatives
+```{r, echo = FALSE, warning = FALSE, results = 'hide', fig.height=5, fig.width=7}
+# logistique sur la présence ou non 
+# colonnes_predictives2 <- c("nv_vie",
+#                            "salaire_moy",
+#                            "ouvriers",
+#                            "cadres_prof_intellec", 
+#                            "dipl_0",
+#                            "dipl_brevet",
+#                            "dipl_cap_bep",
+#                            "dipl_bac+2",
+#                            "dipl_bac+3+4",
+#                            "dipl_bac+5+",
+#                            "densite", 
+#                            "type_agg", 
+#                            "boulangeries")
+
+data = df[, c("Presence", colonnes_predictives)]
+modele_logistique <- glm(Presence ~ ., data = data, family = binomial)
+
+tab <- tidy(modele_logistique) %>% 
+  mutate(estimate = round(estimate, 5), 
+         `std.error` = round(`std.error`, 2), 
+         statistic = round(statistic, 2), 
+         `p.value` = round(`p.value`, 2), 
+         sig = ifelse(`p.value` < 0.01, "***", 
+                      ifelse(`p.value` < 0.05, "**", 
+                             ifelse(`p.value` < 0.1, "*", " ")))) %>%
+  select(-term)
+
+tab$Variable <- c("Constante", nom_variables)
+tab <- tab %>% select(Variable, estimate, `std.error`, statistic, 
+                      `p.value`, sig)
+
+# modelplot(models = modele_regression,
+#           coef_map = cm)
+
+plot <- ggcoef(modele_logistique, 
+               exclude_intercept = TRUE,
+               errorbar_height = .2, 
+               color = "blue",
+               vline_color = "red", 
+               sort = "none", 
+               exponentiate = TRUE)
+plot$data$term <- nom_variables
+
+plot + xlab("Odd ratio") + ylab("Variable") + 
+  theme(panel.background = element_rect(fill = 'white', 
+                                        color = 'grey'), 
+        panel.grid.major = element_line(color = 'grey',
+                                        linetype = 'dotted'))
+
+```
+
+```{r, echo = FALSE}
+kable(tab)
+knit_print(paste0("R2 ajusté = ", round(with(summary(modele_logistique), 1 - deviance/null.deviance), 2)))
+```
+
+
+```{r, echo = FALSE}
+# # rf pour rire 
+# 
+# set.seed(123)
+# 
+# # data
+# data_rf = presence_amap_no_na[, c("NombreAmap", colonnes_predictives2)]
+# data_rf <- na.omit(data_rf)
+# colnames(data_rf) <- c("NombreAmap", "nv_vie", "tx_chomage", "ouvriers", "dipl0", "dipl_brevet", "dipl_cap_bep", "dipl_bac2", "dipl_bac34", "diplbac5", "densite")
+# 
+# # 80% train 20% test
+# indice_echantillon <- createDataPartition(data_rf$NombreAmap, p = 0.8, list = FALSE)
+# train <- data_rf[indice_echantillon, ]
+# test <- data_rf[-indice_echantillon, ]
+# 
+# # Afficher les dimensions des échantillons
+# cat("Taille de l'échantillon d'entraînement :", dim(train), "\n")
+# cat("Taille de l'échantillon de test :", dim(test), "\n")
+# 
+# # Créer le modèle de Random Forest
+# modele_rf <- randomForest(NombreAmap ~ ., data = train)
+# 
+# # Faire des prédictions sur l'échantillon de test
+# predictions <- predict(modele_rf, newdata = test, type = "response")
+# 
+# # Matrice de confusion
+# confusion_matrix <- table(predictions, test$NombreAmap)
+# 
+# # Taux d'erreur
+# error_rate <- (confusion_matrix[2, 1] + confusion_matrix[1, 2]) / sum(confusion_matrix)
+# print(paste("Taux d'erreur : ", round(error_rate * 100, 2), "%"))
+# 
+# # A titre de comparaison, c'est mieux que de prédire tout le temps une absence
+# print(paste("Taux d'erreur d'un prédicteur qui prédirait tout le temps 0 : ", round(sum(data_rf$NombreAmap)/nrow(data_rf), 2), "%"))
+```
+
+\newpage 
+
+# Arbre de décision : prédiction de la présence d'une amap dans la commune 
+```{r, echo = FALSE, results='hide', fig.height=10, fig.width=10}
+# arbre de décision 
+set.seed(10)
+
+sample <- sample(c(TRUE, FALSE), nrow(df), replace=TRUE,
+                 prob=c(0.8,0.2))
+train  <- df[sample, ]
+test   <- df[!sample, ]
+
+tree <- rpart(
+    Presence ~ salaire_moy + densite + 
+    # + tx_pauvrete + tx_chomage 
+    `0_enfant` + `1_enfant` + `2_enfants` + `3_enfants_+` +
+    # `0_enfant` + enfants + 
+    # dipl_0 + dipl_brevet + dipl_cap_bep + dipl_bac + `dipl_bac+2` +
+    `dipl_bac+3+4` + `dipl_bac+5+` +
+    dipl_1 + dipl_2 + dipl_3 + dipl_4 +
+    # etudes_sup + 
+    agri + artisants_commerçants_chef_d_ent + cadres_prof_intellec +
+    prof_int + employes + ouvriers +
+    # `CSP_+` + `CSP_-` + 
+    supermarches + epiceries + boulangeries + 
+    `15ans-` + `25ans-` + `25-64ans` + `65ans+` + 
+    taille_menage + nv_vie + type_agg, 
+  data=train, 
+  method = "class", 
+  control=rpart.control(cp=.0001))
+
+#view results
+printcp(tree)
+
+#identify best cp value to use
+best <- tree$cptable[which.min(tree$cptable[,"xerror"]),"CP"]
+
+#produce a pruned tree based on the best cp value
+pruned_tree <- prune(tree, cp=best)
+
+prp(pruned_tree,
+    varlen=0, #use full names for factor labels
+    extra=1, #display number of obs. for each terminal node
+    roundint=F, #don't round to integers in output
+    digits=5) #display 5 decimal places in output
+
+
+predicted_amap <- predict(tree, train) %>%
+  as_tibble() %>%
+  rename("prediction" = "0") %>%
+  mutate(prediction = as.numeric((prediction < 0.5))) %>%
+  select(prediction)
+
+
+n_train <- nrow(train)
+true_train <- train %>%
+  select(Presence) %>%
+  bind_cols(predicted_amap) %>%
+  mutate(score = (Presence == prediction)) %>%
+  filter(score) %>%
+  nrow()
+
+predicted_amap <- predict(tree, test) %>%
+  as_tibble() %>%
+  rename("prediction" = "0") %>%
+  mutate(prediction = as.numeric((prediction < 0.5))) %>%
+  select(prediction)
+
+
+n_test <- nrow(test)
+true_test <- test %>%
+  select(Presence) %>%
+  bind_cols(predicted_amap) %>%
+  mutate(score = (Presence == prediction)) %>%
+  filter(score) %>%
+  nrow()
+  
+  
+
+# a faire : 
+# 2 - faudrait-il dedoubler les villes pour lesquelles il y a plusieurs amaps, 
+#     par ex, lorsqu'il y a  trois amaps, mettre trois fois la ligne, comme ça
+#     on exacèrbe les caracteristiques de cette ville 
+```
+Score de train = `r round(true_train/n_train, 2)`
+
+Score de test = `r round(true_test/n_test, 2)`
+
+
+\newpage 
+# Clustering : on analyse les types de communes dans lesquelles se trouve une amap
+```{r, echo = FALSE, results='hide', warning = FALSE, fig.height=4, fig.width=6}
+#create plot of number of clusters vs total within sum of squares
+nombre_amap <- df %>%
+  filter(NombreAmap > 0)
+
+nombre_amap2 <- nombre_amap
+nombre_amap <- nombre_amap %>%
+  mutate(type_agg_num = ifelse(type_agg == "metropole", 0,
+                               ifelse(type_agg == "campagne", 2, 1))) %>%
+  dplyr :: select(-ZE2020, -BV2022, -Presence, 
+                  -type_agg, -type, -NombreAmap, -id)
+rownames(nombre_amap) <- nombre_amap$CODGEO
+
+nombre_amap <- nombre_amap %>% select(-CODGEO)
+
+df_cluster <- scale(nombre_amap)
+
+fviz_nbclust(df_cluster, 
+             kmeans, method = "wss")
+
+#make this example reproducible
+set.seed(1)
+
+#perform k-means clustering
+km <- kmeans(df_cluster, centers = 2, nstart = 25)
+clusters <- km$cluster %>% as.data.frame() %>%
+  rename(cluster = '.')
+
+nombre_amap2 <- nombre_amap2 %>% bind_cols(clusters) %>%
+  mutate(cluster = paste0('Cluster ', as.character(as.numeric(cluster)))) %>%
+  bind_rows(df %>% mutate(cluster = 'Population générale'))
+```
+
+
+```{r, echo = FALSE, warning = FALSE}
+n_1 <- nombre_amap2 %>% filter(cluster == "Cluster 1") %>% nrow()
+n_2 <- nombre_amap2 %>% filter(cluster == "Cluster 2") %>% nrow()
+n_3 <- nombre_amap2 %>% 
+  filter(cluster == "Population générale") %>% nrow()
+```
+
+Le premier cluster regroupe `r round(n_1/(n_1 + n_2)*100,2)` % des communes dans lesquelles on trouve une amap.
+
+Le deuxième cluster regroupe `r round(n_2/(n_1 + n_2)*100,2)` % des communes dans lesquelles on trouve une amap.
+
+```{r, echo = FALSE, fig.height=4, fig.width=6, warning = FALSE}
+# #Déterminants économiques 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = nv_vie, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Niveau de vie") + xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted')) + 
+#   scale_fill_brewer(palette="Paired")
+# 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = salaire_moy, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Salaire moyen") + xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted')) + 
+#   scale_fill_brewer(palette="Paired")
+# 
+
+# #CSP
+# ggplot(data =nombre_amap2, aes(x = cluster, y = cadres_prof_intellec,
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion de cadres et professions \nintellectuelles supérieures") + xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# ggplot(data =nombre_amap2, aes(x = cluster,
+#                                y = artisants_commerçants_chef_d_ent, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion d'artisants, de commerçants et \nchefs d'entreprise") + xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = ouvriers, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Porportion d'ouvriers") + xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# 
+# #Diplome 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = `dipl_bac+5+`, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion de personnes diplômées d'un master \nou plus") +
+#   xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = master_licence, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion de personnes diplômées d'une licence \nou plus") + 
+#   xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# 
+# #Age de la population 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = `25ans-`, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion de personnes âgées de moins de 25 ans") +  
+#   xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = `25-64ans`, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion de personnes âgées de 25 ans à 64 ans") +
+#   xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = `65ans+`, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion de personnes âgées de 65 ans ou plus") +
+#   xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# 
+# #Composition du ménage 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = taille_menage, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Taille du ménage") + xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = `0_enfant`, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion de ménages sans enfants") + xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+# 
+# 
+# ggplot(data =nombre_amap2, aes(x = cluster, y = `3_enfants_+`, 
+#                                fill = cluster)) + 
+#   geom_boxplot() + theme(legend.position="none") + 
+#   ylab("Proportion de ménages avec 3 enfants ou plus") +
+#   xlab("Groupe") + 
+#   theme(panel.background = element_rect(fill = 'white', 
+#                                         color = 'grey'), 
+#         panel.grid.major = element_line(color = 'grey',
+#                                         linetype = 'dotted'))
+
+``` 
+
+```{r, echo = FALSE, warning = FALSE, fig.height=3, fig.width=10}
+cluster_agg <- nombre_amap2 %>%
+  group_by(type_agg, cluster) %>%
+  mutate(prop = round(ifelse(cluster == "Cluster 1", 
+                       n()/n_1, 
+                       ifelse(cluster == "Cluster 2", n()/n_2, n()/n_3)), 2)) %>%
+  distinct(type_agg, .keep_all = T) %>%
+  select(cluster, type_agg, prop) %>%
+  mutate(cluster = ifelse(cluster == "Population générale", "Population\ngénérale", cluster), 
+         agg = ifelse(type_agg == "campagne", "Rural à habitat (très) dispersé, bourg rural", 
+                      ifelse(type_agg == "petite_moy_ville", 
+                             "Petites villes, ceinture urbaine,\ncentres urbains intermédiaires", 
+                             "Grand centre urbain")))
+
+# kable(cluster_agg)
+
+ggplot(cluster_agg, aes(fill = agg,
+                        y = prop, x = cluster))+
+  geom_bar(position = "fill", stat = "identity")+
+  #ggtitle("Titre")+
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("Groupe") + ylab("Proportion") + 
+  theme(panel.background = element_rect(fill = 'white',  
+                                        color = 'grey')) + 
+  coord_flip() + 
+  scale_fill_manual("Type d'agglomération", values=c('purple', 'orange', '#66CC99'))
+```
+
+```{r, echo = FALSE, warning = FALSE, fig.height=6.5, fig.width=10}
+cluster_infos <- nombre_amap2 %>%
+  group_by(cluster) %>%
+  mutate(nv_vie_m = mean(nv_vie), 
+         salaire_moy_n_m = mean(salaire_moy_n), 
+         cadres_prof_intellec_m = mean(cadres_prof_intellec), 
+         ouvriers_m = mean(ouvriers), 
+         master_licence_m = mean(master_licence), 
+         jeunes_m = mean(`25ans-`), 
+         vieux_m = mean(`65ans+`),
+         #ages_medians_m = mean(`25-64ans`), 
+         zero_enfant_m = mean(`0_enfant`), 
+         trois_enfants_m = mean(`3_enfants_+`)) %>%
+  ungroup() %>%
+  distinct(cluster, .keep_all = T) %>%
+  # select(cluster, nv_vie_m, salaire_moy_n_m, 
+  #        cadres_prof_intellec_m, ouvriers_m, master_licence_m, 
+  #        jeunes_m, vieux_m, #ages_medians_m, 
+  #        zero_enfant_m, trois_enfants_m) %>%
+  select(cluster, nv_vie_m, trois_enfants_m, zero_enfant_m, 
+         vieux_m, jeunes_m, #ages_medians_m
+         master_licence_m, ouvriers_m, cadres_prof_intellec_m, 
+         salaire_moy_n_m)  %>%
+  t() %>%
+  data.frame() %>%
+  row_to_names(row_number = 1) %>%
+  rename("cluster1" = "Cluster 1", 
+         "cluster2" = "Cluster 2", 
+         "pop_gen" = "Population générale") %>% 
+  mutate(cluster1 = as.numeric(cluster1) - as.numeric(pop_gen), 
+         cluster2 = as.numeric(cluster2) - as.numeric(pop_gen), 
+         cluster = "Cluster 1") %>%
+  select(-pop_gen) %>%
+  slice(2:11) #on enlève le salaire moyen normalisé et le niveau de vie 
+# car les chiffres ne sont pas comparables à des pourcentages 
+
+# variables <- c("Salaire moyen\nnormalisé", 
+#                "Part de cadres et\nprofessions intellec-\ntuelles supérieures",
+#                "Part d'ouvriers",
+#                "Part de personnes\ndiplomées d'une\nlicence ou plus", 
+#                "Part de la\npopulation âgée\nde 25 ans ou moins", 
+#                "Part de la\npopulation âgée\nde 65 ans ou plus", 
+#                "Part de ménages\nsans enfant", 
+#                "Part de ménages\navec au moins\n3 enfants")
+
+variables <- c("Part de ménages avec\nau moins 3 enfants", 
+               "Part de ménages sans enfant", 
+               "Part de la population\nâgée de 65 ans ou plus",
+               "Part de la population\nâgée de 25 ans ou moins",
+               "Part de personnes diplomées\nd'une licence ou plus", 
+               "Part d'ouvriers",
+               "Part de cadres et professions\nintellectuelles supérieures",
+               "Salaire moyen normalisé") 
+
+
+cluster_infos$variable <- variables
+
+cluster_infos <- cluster_infos %>%
+  bind_rows(cluster_infos %>% 
+              mutate(cluster = "Cluster 2")) %>%
+  mutate(value = ifelse(cluster == "Cluster 1", cluster1, cluster2)) %>%
+  select(-cluster1, -cluster2)
+
+ggplot(data=cluster_infos, aes(x=variable, y=value, fill=cluster)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  # geom_text(aes(label=value), vjust=1.6, color="white",
+  #           position = position_dodge(0.9), size=3.5)+
+  scale_fill_brewer("Groupe", palette="Paired")+
+  theme(panel.background = element_rect(fill = 'white',  
+                                        color = 'grey')) +  
+  theme(panel.grid.major = element_line(color = '#CCCCCC',
+                                        linetype = 'dotted')) +
+  xlab("Variable (exprimée en %)\n") + ylab("Différence à la population générale") + 
+  scale_x_discrete(limits = variables) + 
+  coord_flip()
+  
+```
+
+
+```{r, echo = FALSE, warning = FALSE}
+rm(list = ls())
+```
