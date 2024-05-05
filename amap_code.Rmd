@@ -199,19 +199,19 @@ colonnes_predictives <- c("salaire_moy_n",
                           # "15ans-", 
                           "25ans-", 
                           # "25-64ans", 
-                          "65ans+",
-                          "densite_n")
+                          "65ans+")
+                        
 nom_variables <- c("Salaire moyen normalisé", 
                    "Part d'ouvriers",
                    "Part de cadres et professions\nintellectuelles supérieures", 
                    "Part de personnes diplomées\nd'une licence ou plus", 
                    "Type d'agglomération :\nmétropole", 
                    "Type d'agglomération :\nville petite ou moyenne",
-                   'Nombre de boulangeries', 
+                   '      Nombre de boulangeries', 
                    "Part de ménages avec\nau moins 3 enfants", 
                    "Part de la population\nâgée de 25 ans ou moins", 
-                   "Part de la population\nâgée de 65 ans ou plus", 
-                   "Densité")
+                   "Part de la population\nâgée de 65 ans ou plus") 
+                   
 
 data = df[, c("NombreAmap", colonnes_predictives)]
 modele_regression <- lm(NombreAmap ~ ., data = data)
@@ -250,10 +250,10 @@ plot$data$term <- nom_variables
 
 ```{r, echo = FALSE, results = 'hide', warning = FALSE, fig.height=5, fig.width=7}
 
-cust <- data.frame(term = c(plot$data$term[1:6], plot$data$term[8:11]),
-                   estimate = c(plot$data$estimate[1:6], plot$data$estimate[8:11]), 
-                   `conf.low` = c(plot$data$`conf.low`[1:6], plot$data$`conf.low`[8:11]),
-                   `conf.high` = c(plot$data$`conf.high`[1:6], plot$data$`conf.high`[8:11]))
+cust <- data.frame(term = c(plot$data$term[1:6], plot$data$term[8:10]),
+                   estimate = c(plot$data$estimate[1:6], plot$data$estimate[8:10]), 
+                   `conf.low` = c(plot$data$`conf.low`[1:6], plot$data$`conf.low`[8:10]),
+                   `conf.high` = c(plot$data$`conf.high`[1:6], plot$data$`conf.high`[8:10]))
 
 ggcoef(cust, color = "blue", errorbar_height = .2,
        vline_color = "red",  sort = "none") +
