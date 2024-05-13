@@ -1,7 +1,7 @@
 ---
 title: "AMAP - Fichier de résultats"
 author: "BORNET Jérémi, THAURY Marie-Olive"
-date: "2024-04-21"
+date: "2024-05-15"
 output:
   pdf_document: default
   html_document: default
@@ -195,6 +195,7 @@ colonnes_predictives <- c("salaire_moy_n",
                           "type_agg", 
                           "boulangeries_n", 
                           # "enfants", 
+                          "0_enfant", 
                           "3_enfants_+", 
                           # "15ans-", 
                           "25ans-", 
@@ -205,9 +206,10 @@ nom_variables <- c("Salaire moyen normalisé",
                    "Part d'ouvriers",
                    "Part de cadres et professions\nintellectuelles supérieures", 
                    "Part de personnes diplomées\nd'un master ou plus", 
-                   "Type d'agglomération :\nmétropole", 
-                   "Type d'agglomération :\nville petite ou moyenne",
-                   '       Nombre de boulangeries', 
+                   "Type d'agglomération :\nGrand centre urbain", 
+                   "Type d'agglomération :\nVille petite ou moyenne",
+                   '            Nombre normalisé de\n           boulangeries', 
+                   "Part de ménages sans\nenfants", 
                    "Part de ménages avec\nau moins 3 enfants", 
                    "Part de la population\nâgée de 25 ans ou moins", 
                    "Part de la population\nâgée de 65 ans ou plus") 
@@ -250,10 +252,10 @@ plot$data$term <- nom_variables
 
 ```{r, echo = FALSE, results = 'hide', warning = FALSE, fig.height=5, fig.width=7}
 
-cust <- data.frame(term = c(plot$data$term[1:6], plot$data$term[8:10]),
-                   estimate = c(plot$data$estimate[1:6], plot$data$estimate[8:10]), 
-                   `conf.low` = c(plot$data$`conf.low`[1:6], plot$data$`conf.low`[8:10]),
-                   `conf.high` = c(plot$data$`conf.high`[1:6], plot$data$`conf.high`[8:10]))
+cust <- data.frame(term = c(plot$data$term[1:6], plot$data$term[8:11]),
+                   estimate = c(plot$data$estimate[1:6], plot$data$estimate[8:11]), 
+                   `conf.low` = c(plot$data$`conf.low`[1:6], plot$data$`conf.low`[8:11]),
+                   `conf.high` = c(plot$data$`conf.high`[1:6], plot$data$`conf.high`[8:11]))
 
 ggcoef(cust, color = "blue", errorbar_height = .2,
        vline_color = "red",  sort = "none") +
@@ -428,7 +430,10 @@ knit_print(paste0("R2 ajusté = ", round(with(summary(modele_logistique), 1 - de
 # # data
 # data_rf = presence_amap_no_na[, c("NombreAmap", colonnes_predictives2)]
 # data_rf <- na.omit(data_rf)
-# colnames(data_rf) <- c("NombreAmap", "nv_vie", "tx_chomage", "ouvriers", "dipl0", "dipl_brevet", "dipl_cap_bep", "dipl_bac2", "dipl_bac34", "diplbac5", "densite")
+# colnames(data_rf) <- c("NombreAmap", "nv_vie", "tx_chomage",
+#                        "ouvriers", "dipl0", "dipl_brevet",
+#                        "dipl_cap_bep", "dipl_bac2", "dipl_bac34",
+#                        "diplbac5", "densite")
 # 
 # # 80% train 20% test
 # indice_echantillon <- createDataPartition(data_rf$NombreAmap, p = 0.8, list = FALSE)
